@@ -1,0 +1,2 @@
+-- Local users are created after reset by scripts/seed-users.mjs.
+-- This keeps development passwords in the ignored .env file rather than SQL history.

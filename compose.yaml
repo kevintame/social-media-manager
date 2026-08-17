@@ -1,0 +1,30 @@
+services:
+  app:
+    build:
+      context: .
+      target: ${APP_TARGET:-development}
+    user: "${HOST_UID:-501}:${HOST_GID:-20}"
+    init: true
+    environment:
+      HOME: /tmp/app-home
+      NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL:-http://127.0.0.1:54321}
+      SUPABASE_INTERNAL_URL: ${SUPABASE_INTERNAL_URL:-http://host.docker.internal:54321}
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY}
+      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY}
+      SOCIAL_MEDIA_ROOT: /workspace/social-media
+      MAX_IMAGE_BYTES: ${MAX_IMAGE_BYTES:-26214400}
+      MAX_VIDEO_BYTES: ${MAX_VIDEO_BYTES:-262144000}
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - .:/app
+      - app_node_modules:/app/node_modules
+      - type: bind
+        source: ${SOCIAL_MEDIA_HOST_PATH}
+        target: /workspace/social-media
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+volumes:
+  app_node_modules:
