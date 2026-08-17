@@ -13,12 +13,33 @@ export type ParsedPost = {
   sourceUrl?: string;
   targetDate?: string;
   recommendedTime?: string;
+  metadata: Record<string, string>;
   approvedBy?: string;
   approvedAt?: string;
   approvedContentHash?: string;
   publishedAt?: string;
   liveUrl?: string;
   mediaPaths: string[];
+};
+
+export type ParsedWrapper = {
+  slug: string;
+  title: string;
+  format: string;
+  sourceCreator?: string;
+  sourceBrand?: string;
+  featuredPerson?: string;
+  platform: string;
+  originalFilename?: string;
+  mediaPath: string;
+  mediaHash: string;
+  mediaFileName?: string;
+  mediaMimeType?: string;
+  mediaSizeBytes?: number;
+  createdOn?: string;
+  tags: string[];
+  analysisMarkdown: string;
+  takeaway: string;
 };
 
 export type VaultDocument = {
@@ -31,4 +52,5 @@ export type VaultDocument = {
   sizeBytes: number;
   modifiedAt: string;
   posts: ParsedPost[];
+  wrapper?: ParsedWrapper;
 };

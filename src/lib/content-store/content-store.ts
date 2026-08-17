@@ -1,6 +1,10 @@
 import type { VaultDocument } from "@/features/posts/types";
 
-export type ScanOptions = { assignMissingIds?: boolean };
+export type ScanOptions = {
+  assignMissingIds?: boolean;
+  expectedSourceHashes?: Record<string, string>;
+  requireExactPaths?: boolean;
+};
 export type PatchPostInput = {
   id: string;
   sourcePath: string;
@@ -13,6 +17,8 @@ export type PatchPostInput = {
   postType: string;
   sourceUrl?: string;
   targetDate?: string;
+  recommendedTime?: string;
+  metadata?: Record<string, string>;
   approvedBy?: string;
   approvedAt?: string;
   approvedContentHash?: string;
@@ -27,6 +33,7 @@ export interface ContentStore {
   createPost(input: Omit<PatchPostInput, "sourcePath" | "locator" | "expectedSourceHash">): Promise<VaultDocument>;
   patchPost(input: PatchPostInput): Promise<VaultDocument>;
   resolveMedia(relativePath: string): Promise<string>;
+  inspectMedia(relativePath: string): Promise<{ relativePath: string; fileName: string; mimeType: string; sizeBytes: number; contentHash: string }>;
   recordPublication(input: { id: string; title: string; platform: string; contentHash: string; publishedAt: string; liveUrl?: string }): Promise<string>;
   writeMedia(postId: string, fileName: string, data: Buffer): Promise<{ relativePath: string; fileName: string; mimeType: string; sizeBytes: number; contentHash: string }>;
   removeMedia(relativePath: string): Promise<void>;
