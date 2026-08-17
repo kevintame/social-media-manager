@@ -31,6 +31,7 @@ export type ListPostFilters = { q?: string; status?: string; limit?: number };
 export type ProjectionState = {
   documents: { relative_path: string; source_hash: string; deleted_at: string | null }[];
   posts: { id: string; source_hash: string; approved_content_hash: string | null }[];
+  wrappers?: { media_hash: string; source_hash: string; deleted_at: string | null }[];
 };
 
 export interface ManagerRepository {
@@ -66,6 +67,7 @@ export type SyncPlan = {
   summary: {
     documents: number;
     posts: number;
+    wrappers: number;
     missingIds: number;
     approvalInvalidations: number;
     projectionAdds: number;
@@ -81,6 +83,9 @@ export type SyncPlan = {
     addPosts: string[];
     updatePosts: string[];
     stalePostIds: string[];
+    addWrappers: string[];
+    updateWrappers: string[];
+    removeWrappers: string[];
   };
 };
 
@@ -271,7 +276,7 @@ export function createManagerService(dependencies: {
 
 export async function createSyncPlan(store: ContentStore, repository?: ManagerRepository): Promise<SyncPlan> {
   const documents = await store.scan({ assignMissingIds: false });
-  const projection = repository ? await repository.getProjectionState() : { documents: [], posts: [] };
+  const projection = repository ? await repository.getProjectionState() : { documents: [], posts: [], wrappers: [] };
   const canonicalDocuments = new Map(documents.map((document) => [document.relativePath, document]));
   const projectedDocuments = new Map(projection.documents.filter((item) => !item.deleted_at).map((item) => [item.relative_path, item]));
   const canonicalPosts = documents.flatMap((document) => document.posts.filter((post): post is ParsedPost & { id: string } => Boolean(post.id)).map((post) => ({ post, document })));
@@ -285,20 +290,28 @@ export async function createSyncPlan(store: ContentStore, repository?: ManagerRe
   const updatePosts = canonicalPosts.filter(({ post, document }) => projectedPosts.has(post.id) && projectedPosts.get(post.id)!.source_hash !== document.hash).map(({ post }) => post.id);
   const canonicalIds = new Set(canonicalPosts.map(({ post }) => post.id));
   const stalePostIds = [...projectedPosts.keys()].filter((id) => !canonicalIds.has(id));
-  const proposedChanges = { assignIdsIn, invalidateApprovalFor, addDocuments, updateDocuments, removeDocuments, addPosts, updatePosts, stalePostIds };
+  const canonicalWrappers = documents.filter((document) => document.wrapper).map((document) => ({ wrapper: document.wrapper!, document }));
+  const projectedWrappers = new Map((projection.wrappers ?? []).filter((wrapper) => !wrapper.deleted_at).map((wrapper) => [wrapper.media_hash, wrapper]));
+  const addWrappers = canonicalWrappers.filter(({ wrapper }) => !projectedWrappers.has(wrapper.mediaHash)).map(({ wrapper }) => wrapper.mediaHash);
+  const updateWrappers = canonicalWrappers.filter(({ wrapper, document }) => projectedWrappers.has(wrapper.mediaHash) && projectedWrappers.get(wrapper.mediaHash)!.source_hash !== document.hash).map(({ wrapper }) => wrapper.mediaHash);
+  const canonicalWrapperHashes = new Set(canonicalWrappers.map(({ wrapper }) => wrapper.mediaHash));
+  const removeWrappers = [...projectedWrappers.keys()].filter((hash) => !canonicalWrapperHashes.has(hash));
+  const proposedChanges = { assignIdsIn, invalidateApprovalFor, addDocuments, updateDocuments, removeDocuments, addPosts, updatePosts, stalePostIds, addWrappers, updateWrappers, removeWrappers };
   const summary = {
     documents: documents.length,
     posts: documents.reduce((sum, document) => sum + document.posts.length, 0),
+    wrappers: canonicalWrappers.length,
     missingIds: documents.flatMap((document) => document.posts).filter((post) => !post.id).length,
     approvalInvalidations: invalidateApprovalFor.length,
-    projectionAdds: addDocuments.length + addPosts.length,
-    projectionUpdates: updateDocuments.length + updatePosts.length,
-    projectionRemovals: removeDocuments.length + stalePostIds.length,
+    projectionAdds: addDocuments.length + addPosts.length + addWrappers.length,
+    projectionUpdates: updateDocuments.length + updatePosts.length + updateWrappers.length,
+    projectionRemovals: removeDocuments.length + stalePostIds.length + removeWrappers.length,
   };
   const vaultFingerprint = documents.map((document) => [document.relativePath, document.hash]).sort(([left], [right]) => left.localeCompare(right));
   const projectionFingerprint = {
     documents: [...projection.documents].sort((left, right) => left.relative_path.localeCompare(right.relative_path)),
     posts: [...projection.posts].sort((left, right) => left.id.localeCompare(right.id)),
+    wrappers: [...(projection.wrappers ?? [])].sort((left, right) => left.media_hash.localeCompare(right.media_hash)),
   };
   const expectedSourceHashes = Object.fromEntries(documents.map((document) => [document.relativePath, document.hash]));
   const planToken = createHash("sha256").update(JSON.stringify({ summary, proposedChanges, vaultFingerprint, projectionFingerprint })).digest("hex");

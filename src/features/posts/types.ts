@@ -22,6 +22,26 @@ export type ParsedPost = {
   mediaPaths: string[];
 };
 
+export type ParsedWrapper = {
+  slug: string;
+  title: string;
+  format: string;
+  sourceCreator?: string;
+  sourceBrand?: string;
+  featuredPerson?: string;
+  platform: string;
+  originalFilename?: string;
+  mediaPath: string;
+  mediaHash: string;
+  mediaFileName?: string;
+  mediaMimeType?: string;
+  mediaSizeBytes?: number;
+  createdOn?: string;
+  tags: string[];
+  analysisMarkdown: string;
+  takeaway: string;
+};
+
 export type VaultDocument = {
   relativePath: string;
   kind: "post" | "daily_bundle" | "strategy" | "idea" | "template" | "wrapper" | "source" | "published" | "other";
@@ -32,4 +52,5 @@ export type VaultDocument = {
   sizeBytes: number;
   modifiedAt: string;
   posts: ParsedPost[];
+  wrapper?: ParsedWrapper;
 };

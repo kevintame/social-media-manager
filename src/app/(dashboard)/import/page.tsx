@@ -3,13 +3,14 @@ import { syncAction } from "@/features/posts/actions";
 type SyncPlan = {
   planToken: string;
   summary: {
-    documents: number; posts: number; missingIds: number; approvalInvalidations: number;
+    documents: number; posts: number; wrappers: number; missingIds: number; approvalInvalidations: number;
     projectionAdds: number; projectionUpdates: number; projectionRemovals: number;
   };
   proposedChanges: {
     assignIdsIn: string[]; invalidateApprovalFor: string[]; addDocuments: string[];
     updateDocuments: string[]; removeDocuments: string[]; addPosts: string[];
-    updatePosts: string[]; stalePostIds: string[];
+    updatePosts: string[]; stalePostIds: string[]; addWrappers: string[];
+    updateWrappers: string[]; removeWrappers: string[];
   };
 };
 
@@ -23,7 +24,7 @@ export default async function ImportPage({ searchParams }: { searchParams: Promi
     {query.error && <p className="notice error">{query.error}</p>}
     {result && <section className="panel">
       <h2>{query.mode === "commit" ? "Synchronization complete" : "Dry-run result"}</h2>
-      <p><strong>{result.summary.documents}</strong> documents and <strong>{result.summary.posts}</strong> posts found.</p>
+      <p><strong>{result.summary.documents}</strong> documents, <strong>{result.summary.posts}</strong> posts, and <strong>{result.summary.wrappers}</strong> wrappers found.</p>
       <ul>
         <li>{result.summary.missingIds} stable IDs to assign</li>
         <li>{result.summary.approvalInvalidations} approvals to invalidate</li>

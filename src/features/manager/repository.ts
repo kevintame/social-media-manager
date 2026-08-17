@@ -31,13 +31,21 @@ export function createSupabaseManagerRepository(): ManagerRepository {
       return data as ManagerPost | null;
     },
     async getProjectionState() {
-      const [{ data: documents, error: documentError }, { data: posts, error: postError }] = await Promise.all([
+      const [{ data: documents, error: documentError }, { data: posts, error: postError }, { data: wrappers, error: wrapperError }] = await Promise.all([
         admin.from("documents").select("relative_path,source_hash,deleted_at"),
         admin.from("posts").select("id,source_hash,approved_content_hash,documents!inner(deleted_at)").is("documents.deleted_at", null),
+        admin.from("wrappers").select("media_hash,documents!inner(source_hash,deleted_at)"),
       ]);
       throwIfError(documentError);
       throwIfError(postError);
-      return { documents: documents ?? [], posts: posts ?? [] };
+      throwIfError(wrapperError);
+      return {
+        documents: documents ?? [], posts: posts ?? [],
+        wrappers: (wrappers ?? []).map((wrapper) => {
+          const document = Array.isArray(wrapper.documents) ? wrapper.documents[0] : wrapper.documents;
+          return { media_hash: wrapper.media_hash, source_hash: document?.source_hash ?? "", deleted_at: document?.deleted_at ?? null };
+        }),
+      };
     },
     async addComment(postId, userId, body) {
       const { data, error } = await admin.from("post_comments").insert({ post_id: postId, author_id: userId, body }).select("*, profiles:author_id(display_name)").single();

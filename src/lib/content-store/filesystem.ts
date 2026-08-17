@@ -85,6 +85,17 @@ export class FilesystemContentStore implements ContentStore {
         if (expectedHash && sha256(raw) !== expectedHash) throw new ContentConflictError();
         let stat = await fs.stat(absolute);
         let document = parseMarkdown(relative, raw, stat);
+        if (document.wrapper) {
+          const media = await this.inspectMedia(document.wrapper.mediaPath);
+          if (media.mimeType === "application/x-vault-reference") throw new Error(`Wrapper media is missing: ${document.wrapper.mediaPath}`);
+          if (media.contentHash !== document.wrapper.mediaHash) throw new Error(`Wrapper media checksum does not match frontmatter: ${document.wrapper.mediaPath}`);
+          document.wrapper = {
+            ...document.wrapper,
+            mediaFileName: media.fileName,
+            mediaMimeType: media.mimeType,
+            mediaSizeBytes: media.sizeBytes,
+          };
+        }
         if (options.assignMissingIds && document.posts.some((post) => !post.id)) {
           const assigned = assignIds(raw, document);
           if (assigned.assigned) {

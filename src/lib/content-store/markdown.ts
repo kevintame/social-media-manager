@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import matter from "gray-matter";
-import type { ParsedPost, VaultDocument } from "@/features/posts/types";
+import type { ParsedPost, ParsedWrapper, VaultDocument } from "@/features/posts/types";
 import { normalizeStatus } from "@/features/posts/status";
 
 const UUID = "[0-9a-fA-F-]{36}";
@@ -50,6 +50,63 @@ function mediaPaths(text: string): string[] {
     if (value && !/^none$/i.test(value)) value.split(",").map((item) => item.trim()).filter(Boolean).forEach((item) => paths.add(item));
   }
   return [...paths];
+}
+
+function markdownString(value: unknown): string | undefined {
+  if (value instanceof Date) return value.toISOString().slice(0, 10);
+  if (typeof value === "string" && value.trim()) return value.trim();
+  return undefined;
+}
+
+function markdownTags(value: unknown): string[] {
+  if (Array.isArray(value)) return value.filter((item): item is string => typeof item === "string").map((item) => item.trim()).filter(Boolean);
+  if (typeof value === "string") return value.replace(/^\[|\]$/g, "").split(",").map((item) => item.trim()).filter(Boolean);
+  return [];
+}
+
+function stripInlineMarkdown(value: string): string {
+  return value.replace(/\*\*|__|`/g, "").replace(/^>\s*/, "").trim();
+}
+
+function wrapperAnalysis(content: string): string {
+  return content
+    .replace(/^#\s+.*\n+/, "")
+    .replace(/^\*\*Screenshot:\*\*[^\n]*(?:\n|$)/gm, "")
+    .replace(/^!\[\[[^\]]+\]\]\s*(?:\n|$)/gm, "")
+    .trim();
+}
+
+function wrapperTakeaway(analysis: string): string {
+  const reorientation = analysis.match(/^## How do I reorient[^\n]*\n+([\s\S]*)/im)?.[1] ?? analysis;
+  const recommended = reorientation.match(/Recommended rewritten hook:\s*\n+(?:>\s*)?([^\n]+)/i)?.[1];
+  if (recommended) return stripInlineMarkdown(recommended);
+  const fallback = reorientation.split(/\n\s*\n/).map((value) => value.trim()).find((value) => value && !value.startsWith("#") && !value.startsWith("Recommended rewritten hook:"));
+  return stripInlineMarkdown(fallback ?? "Open the analysis for the reusable structure and adaptation notes.");
+}
+
+function parsedWrapper(relativePath: string, data: Record<string, unknown>, content: string, title: string): ParsedWrapper | undefined {
+  if (String(data.type ?? "").toLowerCase() !== "wrapper") return undefined;
+  const renamedFile = markdownString(data.renamed_file);
+  const mediaHash = markdownString(data.sha256);
+  if (!renamedFile || !mediaHash) return undefined;
+  const directory = relativePath.includes("/") ? relativePath.slice(0, relativePath.lastIndexOf("/")) : "";
+  const analysisMarkdown = wrapperAnalysis(content);
+  return {
+    slug: relativePath.split("/").at(-1)?.replace(/\.md$/i, "") ?? mediaHash,
+    title,
+    format: markdownString(data.format) ?? "unknown",
+    sourceCreator: markdownString(data.source_creator),
+    sourceBrand: markdownString(data.source_brand),
+    featuredPerson: markdownString(data.featured_person),
+    platform: markdownString(data.platform) ?? "unknown",
+    originalFilename: markdownString(data.original_filename),
+    mediaPath: directory ? `${directory}/${renamedFile}` : renamedFile,
+    mediaHash,
+    createdOn: markdownString(data.created),
+    tags: markdownTags(data.tags),
+    analysisMarkdown,
+    takeaway: wrapperTakeaway(analysisMarkdown),
+  };
 }
 
 export function classifyPath(relativePath: string, isDaily: boolean): VaultDocument["kind"] {
@@ -122,16 +179,18 @@ export function parseMarkdown(relativePath: string, raw: string, stat: { size: n
     });
   }
 
+  const title = heading ?? relativePath.split("/").at(-1) ?? relativePath;
   return {
     relativePath,
     kind: classifyPath(relativePath, sections.length > 0),
-    title: heading ?? relativePath.split("/").at(-1) ?? relativePath,
+    title,
     excerpt: parsed.content.replace(/[#>*`|_-]/g, " ").replace(/\s+/g, " ").trim().slice(0, 280),
     content: raw,
     hash: sha256(raw),
     sizeBytes: stat.size,
     modifiedAt: stat.mtime.toISOString(),
     posts,
+    wrapper: parsedWrapper(relativePath, parsed.data, parsed.content, title),
   };
 }
 

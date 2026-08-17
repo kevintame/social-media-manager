@@ -5,12 +5,13 @@ import type { VaultDocument } from "@/features/posts/types";
 
 const REMOVED_POSTS_DOCUMENT = "_system/removed-posts";
 
-export type SyncSummary = { documents: number; posts: number; missingIds: number; paths: string[] };
+export type SyncSummary = { documents: number; posts: number; wrappers: number; missingIds: number; paths: string[] };
 
 function summarize(documents: VaultDocument[]): SyncSummary {
   return {
     documents: documents.length,
     posts: documents.reduce((sum, document) => sum + document.posts.length, 0),
+    wrappers: documents.filter((document) => Boolean(document.wrapper)).length,
     missingIds: documents.flatMap((document) => document.posts).filter((post) => !post.id).length,
     paths: documents.filter((document) => document.posts.some((post) => !post.id)).map((document) => document.relativePath),
   };
@@ -23,6 +24,7 @@ async function projectDocuments(documents: VaultDocument[], summary: SyncSummary
   try {
     const seenPaths: string[] = [];
     const seenPostIds = new Set<string>();
+    const seenWrapperHashes = new Set<string>();
     for (const document of documents) {
       seenPaths.push(document.relativePath);
       const { data: row, error } = await supabase.from("documents").upsert({
@@ -31,6 +33,25 @@ async function projectDocuments(documents: VaultDocument[], summary: SyncSummary
         size_bytes: document.sizeBytes, modified_at: document.modifiedAt, indexed_at: new Date().toISOString(), deleted_at: null,
       }, { onConflict: "relative_path" }).select("id").single();
       if (error) throw error;
+      if (document.wrapper) {
+        const wrapper = document.wrapper;
+        if (!wrapper.mediaFileName || !wrapper.mediaMimeType || wrapper.mediaSizeBytes === undefined) throw new Error(`Wrapper media was not inspected: ${wrapper.mediaPath}`);
+        seenWrapperHashes.add(wrapper.mediaHash);
+        const { error: replacedWrapperError } = await supabase.from("wrappers").delete().eq("document_id", row.id).neq("media_hash", wrapper.mediaHash);
+        if (replacedWrapperError) throw replacedWrapperError;
+        const searchText = [wrapper.title, wrapper.sourceCreator, wrapper.sourceBrand, wrapper.featuredPerson, wrapper.platform, wrapper.format, ...wrapper.tags, wrapper.analysisMarkdown].filter(Boolean).join(" ");
+        const { error: wrapperError } = await supabase.from("wrappers").upsert({
+          media_hash: wrapper.mediaHash, document_id: row.id, slug: wrapper.slug, title: wrapper.title,
+          format: wrapper.format, source_creator: wrapper.sourceCreator ?? null, source_brand: wrapper.sourceBrand ?? null,
+          featured_person: wrapper.featuredPerson ?? null, platform: wrapper.platform,
+          original_filename: wrapper.originalFilename ?? null, media_relative_path: wrapper.mediaPath,
+          media_file_name: wrapper.mediaFileName, media_mime_type: wrapper.mediaMimeType,
+          media_size_bytes: wrapper.mediaSizeBytes, created_on: wrapper.createdOn ?? null, tags: wrapper.tags,
+          analysis_markdown: wrapper.analysisMarkdown, takeaway: wrapper.takeaway, search_text: searchText,
+          indexed_at: new Date().toISOString(),
+        }, { onConflict: "media_hash" });
+        if (wrapperError) throw wrapperError;
+      }
       for (const post of document.posts) {
         if (!post.id) continue;
         seenPostIds.add(post.id);
@@ -64,6 +85,11 @@ async function projectDocuments(documents: VaultDocument[], summary: SyncSummary
     if (seenPaths.length) deletedDocuments = deletedDocuments.not("relative_path", "in", `(${seenPaths.map((item) => `\"${item.replaceAll('"', '\\"')}\"`).join(",")})`);
     const { error: deletionError } = await deletedDocuments;
     if (deletionError) throw deletionError;
+
+    let staleWrappers = supabase.from("wrappers").delete();
+    if (seenWrapperHashes.size) staleWrappers = staleWrappers.not("media_hash", "in", `(${[...seenWrapperHashes].map((item) => `\"${item}\"`).join(",")})`);
+    const { error: staleWrapperError } = await staleWrappers;
+    if (staleWrapperError) throw staleWrapperError;
 
     const { data: projectedPosts, error: projectedPostError } = await supabase.from("posts").select("id,documents!inner(deleted_at)").is("documents.deleted_at", null);
     if (projectedPostError) throw projectedPostError;

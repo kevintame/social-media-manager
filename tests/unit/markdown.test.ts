@@ -101,3 +101,60 @@ describe("Markdown post parsing", () => {
     expect(result.raw).toContain("Keep me.");
   });
 });
+
+describe("Wrapper Markdown parsing", () => {
+  it("pairs wrapper metadata with its media and extracts a scanning takeaway", () => {
+    const raw = `---
+type: wrapper
+format: written content
+source_creator: Example Creator
+platform: LinkedIn
+renamed_file: example-wrapper.jpg
+sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+created: 2026-08-15
+tags: [wrapper, analogy-hook]
+---
+# Example Wrapper
+
+**Screenshot:** [[example-wrapper.jpg|Open screenshot]]
+
+![[example-wrapper.jpg]]
+
+## What was the structure
+
+1. Make a comparison.
+
+## What was the hook
+
+> A visible hook.
+
+## How do I reorient this for my unique problem + solution combo
+
+Recommended rewritten hook:
+
+> **A SHARPER REWRITTEN HOOK.**
+`;
+    const document = parseMarkdown("Wrappers/example-wrapper.md", raw, stat);
+    expect(document.kind).toBe("wrapper");
+    expect(document.wrapper).toMatchObject({
+      slug: "example-wrapper",
+      title: "Example Wrapper",
+      format: "written content",
+      sourceCreator: "Example Creator",
+      platform: "LinkedIn",
+      mediaPath: "Wrappers/example-wrapper.jpg",
+      mediaHash: "a".repeat(64),
+      tags: ["wrapper", "analogy-hook"],
+      takeaway: "A SHARPER REWRITTEN HOOK.",
+    });
+    expect(document.wrapper?.analysisMarkdown).toContain("## What was the structure");
+    expect(document.wrapper?.analysisMarkdown).not.toContain("Screenshot:");
+    expect(document.wrapper?.analysisMarkdown).not.toContain("![[");
+  });
+
+  it("does not treat the wrapper index as an item", () => {
+    const document = parseMarkdown("Wrappers/index.md", "# Wrapper Library\n", stat);
+    expect(document.kind).toBe("wrapper");
+    expect(document.wrapper).toBeUndefined();
+  });
+});

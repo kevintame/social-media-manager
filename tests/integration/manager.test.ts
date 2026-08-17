@@ -113,6 +113,24 @@ describe("manager service with a temporary vault", () => {
     expect(await readFile(first, "utf8")).not.toContain("post_id:");
   });
 
+  it("validates paired wrapper media without changing the vault", async () => {
+    await mkdir(path.join(root, "Wrappers"), { recursive: true });
+    const media = Buffer.from([0xff, 0xd8, 0xff, 0x01]);
+    const mediaHash = (await import("@/lib/content-store/markdown")).sha256(media);
+    const markdown = `---\ntype: wrapper\nformat: written content\nplatform: LinkedIn\nrenamed_file: example.jpg\nsha256: ${mediaHash}\n---\n# Example\n\n![[example.jpg]]\n\n## How do I reorient this for my unique problem + solution combo\n\nRecommended rewritten hook:\n\n> **USE THIS SHAPE.**\n`;
+    await writeFile(path.join(root, "Wrappers", "example.jpg"), media);
+    await writeFile(path.join(root, "Wrappers", "example.md"), markdown);
+
+    const before = await readFile(path.join(root, "Wrappers", "example.md"), "utf8");
+    const plan = await createSyncPlan(store, repository);
+    expect(plan.summary.wrappers).toBe(1);
+    expect(plan.proposedChanges.addWrappers).toEqual([mediaHash]);
+    expect(await readFile(path.join(root, "Wrappers", "example.md"), "utf8")).toBe(before);
+
+    await writeFile(path.join(root, "Wrappers", "example.jpg"), Buffer.from([0xff, 0xd8, 0xff, 0x02]));
+    await expect(store.scan()).rejects.toThrow("checksum does not match frontmatter");
+  });
+
   it("creates idempotently and updates owned fields while preserving unowned Markdown", async () => {
     const manager = service();
     const input = {
