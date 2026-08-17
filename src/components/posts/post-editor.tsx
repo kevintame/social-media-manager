@@ -9,10 +9,33 @@ export function PostEditor({ post, action, isNew = false }: { post: EditablePost
   const contentRef = useRef<HTMLTextAreaElement>(null);
   const [copyLabel, setCopyLabel] = useState("Copy");
 
+  function copyWithSelection(textarea: HTMLTextAreaElement) {
+    const selectionStart = textarea.selectionStart;
+    const selectionEnd = textarea.selectionEnd;
+    const wasFocused = document.activeElement === textarea;
+
+    textarea.focus();
+    textarea.select();
+    const copied = document.execCommand("copy");
+    textarea.setSelectionRange(selectionStart, selectionEnd);
+    if (!wasFocused) textarea.blur();
+    return copied;
+  }
+
   async function copyPublicContent() {
-    const content = contentRef.current?.value ?? "";
+    const textarea = contentRef.current;
+    if (!textarea) return;
+
     try {
-      await navigator.clipboard.writeText(content);
+      if (navigator.clipboard?.writeText) {
+        try {
+          await navigator.clipboard.writeText(textarea.value);
+        } catch {
+          if (!copyWithSelection(textarea)) throw new Error("Copy failed");
+        }
+      } else if (!copyWithSelection(textarea)) {
+        throw new Error("Copy failed");
+      }
       setCopyLabel("Copied");
       window.setTimeout(() => setCopyLabel("Copy"), 2000);
     } catch {
@@ -22,6 +45,35 @@ export function PostEditor({ post, action, isNew = false }: { post: EditablePost
   }
 
   return <form action={action} className="panel form-grid">
+    {copyLabel === "Copied" && (
+      <div
+        className="clipboard-toast"
+        role="status"
+        aria-live="polite"
+        style={{
+          position: "fixed",
+          zIndex: 1000,
+          left: "50%",
+          bottom: "calc(1.25rem + env(safe-area-inset-bottom, 0px))",
+          display: "flex",
+          alignItems: "center",
+          gap: ".55rem",
+          width: "max-content",
+          maxWidth: "calc(100vw - 2rem)",
+          padding: ".8rem 1rem",
+          borderRadius: ".7rem",
+          background: "#203a2d",
+          color: "white",
+          boxShadow: "0 8px 28px rgb(32 35 31 / 25%)",
+          fontSize: ".9rem",
+          fontWeight: 700,
+          transform: "translateX(-50%)",
+        }}
+      >
+        <svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18" style={{ flex: "0 0 18px", fill: "none", stroke: "currentColor", strokeWidth: 2.25, strokeLinecap: "round", strokeLinejoin: "round" }}><path d="m5 12 4 4L19 6" /></svg>
+        Added to clipboard
+      </div>
+    )}
     {!isNew && <><input type="hidden" name="id" value={post.id} /><input type="hidden" name="expectedSourceHash" value={post.source_hash} /></>}
     <label className="full">Internal title<input name="title" required maxLength={200} defaultValue={post.title} /></label>
     <label>Platform<select name="platform" defaultValue={post.platform ?? "linkedin"}><option value="linkedin">LinkedIn</option><option value="other">Other</option></select></label>
