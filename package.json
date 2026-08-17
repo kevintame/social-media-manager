@@ -17,7 +17,8 @@
     "dev:down": "./scripts/dev-down.sh",
     "dev:reset": "./scripts/dev-reset.sh",
     "dev:logs": "docker compose logs -f app",
-    "dev:status": "pnpm exec supabase status && docker compose ps"
+    "dev:status": "pnpm exec supabase status && docker compose ps",
+    "manager:mcp": "node scripts/hermes-manager-mcp.mjs"
   },
   "dependencies": {
     "@supabase/ssr": "^0.7.0",

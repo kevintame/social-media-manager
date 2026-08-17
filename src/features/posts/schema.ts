@@ -15,7 +15,7 @@ export const postInputSchema = z.object({
 });
 
 export const createPostSchema = postInputSchema.omit({ id: true, expectedSourceHash: true }).extend({
-  status: z.enum(POST_STATUSES).default("draft"),
+  status: z.enum(["draft", "needs_changes", "ready_for_review"]).default("draft"),
 });
 
 export const commentSchema = z.object({

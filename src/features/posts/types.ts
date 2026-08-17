@@ -13,6 +13,7 @@ export type ParsedPost = {
   sourceUrl?: string;
   targetDate?: string;
   recommendedTime?: string;
+  metadata: Record<string, string>;
   approvedBy?: string;
   approvedAt?: string;
   approvedContentHash?: string;

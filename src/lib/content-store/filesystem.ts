@@ -41,33 +41,76 @@ export class FilesystemContentStore implements ContentStore {
       try { await walk(root); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
     }
 
-    const documents: VaultDocument[] = [];
-    for (const relative of files.sort()) {
-      const absolute = await this.safePath(relative);
-      let raw = await fs.readFile(absolute, "utf8");
-      let stat = await fs.stat(absolute);
-      let document = parseMarkdown(relative, raw, stat);
-      if (options.assignMissingIds && document.posts.some((post) => !post.id)) {
-        const assigned = assignIds(raw, document);
-        if (assigned.assigned) {
-          await this.atomicWrite(absolute, assigned.raw);
-          raw = assigned.raw;
-          stat = await fs.stat(absolute);
-          document = parseMarkdown(relative, raw, stat);
-        }
-      }
-      if (options.assignMissingIds) {
-        const invalidated = invalidateChangedApprovals(raw, document);
-        if (invalidated.changed) {
-          await this.atomicWrite(absolute, invalidated.raw);
-          raw = invalidated.raw;
-          stat = await fs.stat(absolute);
-          document = parseMarkdown(relative, raw, stat);
-        }
-      }
-      documents.push(document);
+    const sortedFiles = [...files].sort();
+    if (options.requireExactPaths && options.expectedSourceHashes) {
+      const expectedPaths = Object.keys(options.expectedSourceHashes).sort();
+      if (JSON.stringify(sortedFiles) !== JSON.stringify(expectedPaths)) throw new ContentConflictError();
     }
-    return documents;
+
+    const releases: Array<() => Promise<void>> = [];
+    try {
+      if (options.assignMissingIds) {
+        for (const relative of sortedFiles) {
+          releases.push(await lockfile.lock(await this.safePath(relative), { retries: { retries: 4, minTimeout: 50 } }));
+        }
+      }
+      if (options.requireExactPaths && options.expectedSourceHashes) {
+        const currentFiles: string[] = [];
+        const walkCurrent = async (relativeDir: string) => {
+          const absolute = await this.safePath(relativeDir);
+          for (const entry of await fs.readdir(absolute, { withFileTypes: true })) {
+            const relative = path.posix.join(relativeDir, entry.name);
+            if (entry.isSymbolicLink()) continue;
+            if (entry.isDirectory()) await walkCurrent(relative);
+            else if (entry.isFile() && entry.name.toLowerCase().endsWith(".md")) currentFiles.push(relative);
+          }
+        };
+        for (const root of SCAN_ROOTS) {
+          try { await walkCurrent(root); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+        }
+        if (JSON.stringify(currentFiles.sort()) !== JSON.stringify(Object.keys(options.expectedSourceHashes).sort())) throw new ContentConflictError();
+      }
+      if (options.expectedSourceHashes) {
+        for (const relative of sortedFiles) {
+          const current = await fs.readFile(await this.safePath(relative), "utf8");
+          if (sha256(current) !== options.expectedSourceHashes[relative]) throw new ContentConflictError();
+        }
+      }
+
+      const documents: VaultDocument[] = [];
+      for (const relative of sortedFiles) {
+        const absolute = await this.safePath(relative);
+        let raw = await fs.readFile(absolute, "utf8");
+        const expectedHash = options.expectedSourceHashes?.[relative];
+        if (expectedHash && sha256(raw) !== expectedHash) throw new ContentConflictError();
+        let stat = await fs.stat(absolute);
+        let document = parseMarkdown(relative, raw, stat);
+        if (options.assignMissingIds && document.posts.some((post) => !post.id)) {
+          const assigned = assignIds(raw, document);
+          if (assigned.assigned) {
+            if (expectedHash && sha256(await fs.readFile(absolute, "utf8")) !== expectedHash) throw new ContentConflictError();
+            await this.atomicWrite(absolute, assigned.raw);
+            raw = assigned.raw;
+            stat = await fs.stat(absolute);
+            document = parseMarkdown(relative, raw, stat);
+          }
+        }
+        if (options.assignMissingIds) {
+          const invalidated = invalidateChangedApprovals(raw, document);
+          if (invalidated.changed) {
+            if (sha256(await fs.readFile(absolute, "utf8")) !== sha256(raw)) throw new ContentConflictError();
+            await this.atomicWrite(absolute, invalidated.raw);
+            raw = invalidated.raw;
+            stat = await fs.stat(absolute);
+            document = parseMarkdown(relative, raw, stat);
+          }
+        }
+        documents.push(document);
+      }
+      return documents;
+    } finally {
+      for (const release of releases.reverse()) await release();
+    }
   }
 
   async createPost(input: Omit<PatchPostInput, "sourcePath" | "locator" | "expectedSourceHash">): Promise<VaultDocument> {
@@ -96,6 +139,20 @@ export class FilesystemContentStore implements ContentStore {
 
   async resolveMedia(relativePath: string): Promise<string> {
     return this.safePath(relativePath);
+  }
+
+  async inspectMedia(relativePath: string) {
+    if (!relativePath || path.isAbsolute(relativePath) || relativePath.split("/").includes("..")) throw new Error("Unsafe media path");
+    const fileName = path.posix.basename(relativePath);
+    try {
+      const data = await fs.readFile(await this.safePath(relativePath));
+      let mimeType = "application/octet-stream";
+      try { mimeType = detectMedia(data).mimeType; } catch { /* A canonical reference may use a non-upload media type. */ }
+      return { relativePath, fileName, mimeType, sizeBytes: data.length, contentHash: sha256(data) };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      return { relativePath, fileName, mimeType: "application/x-vault-reference", sizeBytes: 0, contentHash: sha256(relativePath) };
+    }
   }
 
   async writeMedia(postId: string, fileName: string, data: Buffer) {

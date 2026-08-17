@@ -29,6 +29,46 @@ Open **Sync** and run **Dry run** first. It reads the vault without changing it.
 
 The app is intentionally bound to localhost. No cloud deployment or remote synchronization is configured.
 
+## Hermes manager API and MCP adapter
+
+The authenticated `POST /api/manager` endpoint exposes only draft, review,
+comment, activity, publication-history inspection, and guarded sync operations.
+Configure `HERMES_MANAGER_TOKEN` and `HERMES_MANAGER_USER_ID` in the ignored
+`.env`; the configured profile must exist and must have `can_approve=false`.
+Generate the token locally with `openssl rand -hex 32`. Requests are accepted
+only on a loopback hostname. The API has no approval, publishing, deletion, SQL,
+media upload, database reset, or arbitrary filesystem operation. Posted posts
+are immutable.
+
+Run the dependency-free stdio adapter with `pnpm manager:mcp`. It calls
+`http://127.0.0.1:3000/api/manager` by default. `HERMES_MANAGER_URL` may override
+the URL but must remain loopback. The adapter needs only the manager token. Do
+not pass `SUPABASE_SERVICE_ROLE_KEY`, manager passwords, or Kevin's credentials
+to Hermes.
+
+Register it in the active Hermes profile:
+
+```yaml
+mcp_servers:
+  social_media_manager:
+    command: "pnpm"
+    args: ["--dir", "/Users/kevintame/Code/social-media-manager", "manager:mcp"]
+    env:
+      HERMES_MANAGER_TOKEN: "replace-locally; never commit"
+```
+
+Restart Hermes or use `/reload-mcp`, then run
+`hermes mcp test social_media_manager`. Discovered tools are prefixed by Hermes
+as `mcp_social_media_manager_*`. The reusable operating instructions are in
+`.hermes/skills/social-media-manager-mcp/SKILL.md`.
+
+Sync is two-step: call `sync_dry_run`, present its summary and proposed paths or
+IDs, then ask for explicit confirmation. Only after confirmation, pass the
+returned `planToken` to `sync_commit` with the literal `CONFIRM_SYNC`. Commit
+recomputes the plan and rejects a stale token. Background `/api/sync` polling is
+read-only. Normal draft creates and edits reconcile Supabase without making
+vault-wide Markdown changes.
+
 ## Commands
 
 - `pnpm dev:up` — start local Supabase and the application container

@@ -61,6 +61,9 @@ describe("Markdown post parsing", () => {
     expect(assigned.raw.match(/social-post-id/g)).toHaveLength(2);
     expect(assigned.raw).toContain("Intro that must be preserved.");
     expect(assigned.raw).toContain("- Preserve this note.");
+    const reparsed = parseMarkdown("drafts/daily/day.md", assigned.raw, stat);
+    expect(reparsed.posts.every((post) => Boolean(post.id))).toBe(true);
+    expect(reparsed.posts.map((post) => post.content)).toEqual(["First exact copy.", "Second exact copy."]);
   });
 
   it("patches only the selected section's owned fields", () => {
@@ -71,6 +74,18 @@ describe("Markdown post parsing", () => {
     expect(output).toContain("Updated exact copy.");
     expect(output).toContain("Second exact copy.");
     expect(output).toContain("- Preserve this note.");
+  });
+
+  it("writes replacement-token characters literally", () => {
+    const withIds = assignIds(daily, parseMarkdown("drafts/daily/day.md", daily, stat)).raw;
+    const post = parseMarkdown("drafts/daily/day.md", withIds, stat).posts[0];
+    const literal = "$& $1 $2 $` $'";
+    const output = patchMarkdownPost(withIds, { ...post, id: post.id!, locator: post.locator, title: literal, content: literal, status: "draft", platform: "linkedin", postType: literal });
+    const reparsed = parseMarkdown("drafts/daily/day.md", output, stat).posts[0];
+    expect(reparsed.title).toBe(literal);
+    expect(reparsed.content).toBe(literal);
+    expect(reparsed.postType).toBe(literal);
+    expect(output).toContain("Second exact copy.");
   });
 
   it("invalidates approval after exact copy changes", () => {

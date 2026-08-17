@@ -29,6 +29,15 @@ function exactCopy(section: string): string {
     ?? "";
 }
 
+function optionalString(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function stringRecord(value: unknown): Record<string, string> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+}
+
 function mediaPaths(text: string): string[] {
   const paths = new Set<string>();
   for (const match of text.matchAll(/!\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/g)) paths.add(match[1]);
@@ -67,25 +76,26 @@ export function parseMarkdown(relativePath: string, raw: string, stat: { size: n
       const start = match.index ?? 0;
       const end = sections[index + 1]?.index ?? raw.length;
       const section = raw.slice(start, end);
-      let metadata: Record<string, string> = {};
+      let metadata: Record<string, unknown> = {};
       try { metadata = JSON.parse(section.match(metaPattern)?.[1] ?? "{}"); } catch { metadata = {}; }
       posts.push({
         id: section.match(markerPattern)?.[1],
         sourcePath: relativePath,
         locator: `section:${index + 1}`,
         title: match[1].trim(),
-        platform: String(parsed.data.platform ?? "linkedin").toLowerCase() === "linkedin" ? "linkedin" : "other",
+        platform: String(metadata.platform ?? parsed.data.platform ?? "linkedin").toLowerCase() === "linkedin" ? "linkedin" : "other",
         status: normalizeStatus(metadata.status ?? field(section, "Status") ?? parsed.data.status),
         content: exactCopy(section),
-        postType: field(section, "Type") ?? "original",
-        sourceUrl: field(section, "Source post"),
-        targetDate: parsed.data.date ? String(parsed.data.date) : undefined,
-        recommendedTime: field(section, "Recommended time"),
-        approvedBy: metadata.approved_by || undefined,
-        approvedAt: metadata.approved_at || undefined,
-        approvedContentHash: metadata.approved_content_hash || undefined,
-        publishedAt: metadata.published_at || undefined,
-        liveUrl: metadata.live_url || undefined,
+        postType: optionalString(metadata.post_type) ?? field(section, "Type") ?? "original",
+        sourceUrl: optionalString(metadata.source_url) ?? field(section, "Source post"),
+        targetDate: optionalString(metadata.target_date) ?? (parsed.data.date ? String(parsed.data.date) : undefined),
+        recommendedTime: optionalString(metadata.recommended_time) ?? field(section, "Recommended time"),
+        metadata: stringRecord(metadata.metadata),
+        approvedBy: optionalString(metadata.approved_by),
+        approvedAt: optionalString(metadata.approved_at),
+        approvedContentHash: optionalString(metadata.approved_content_hash),
+        publishedAt: optionalString(metadata.published_at),
+        liveUrl: optionalString(metadata.live_url),
         mediaPaths: mediaPaths(section),
       });
     });
@@ -99,8 +109,10 @@ export function parseMarkdown(relativePath: string, raw: string, stat: { size: n
       status: normalizeStatus(parsed.data.status),
       content: exactCopy(raw),
       postType: String(parsed.data.post_type ?? "original"),
-      sourceUrl: parsed.data.source_url || undefined,
-      targetDate: parsed.data.planned_for || undefined,
+      sourceUrl: optionalString(parsed.data.source_url),
+      targetDate: optionalString(parsed.data.planned_for),
+      recommendedTime: optionalString(parsed.data.recommended_time),
+      metadata: stringRecord(parsed.data.manager_metadata),
       approvedBy: parsed.data.approved_by || undefined,
       approvedAt: parsed.data.approved_at || undefined,
       approvedContentHash: parsed.data.approved_content_hash || undefined,
@@ -133,17 +145,15 @@ export function assignIds(raw: string, document: VaultDocument): { raw: string; 
     output = matter.stringify(parsed.content, parsed.data);
     assigned++;
   } else {
-    let offset = 0;
     for (const post of document.posts) {
       if (post.id) continue;
       const sectionNumber = Number(post.locator.split(":")[1]);
       const headings = [...output.matchAll(/^## Post \d+:.*$/gm)];
       const heading = headings[sectionNumber - 1];
       if (!heading?.index && heading?.index !== 0) continue;
-      const insertAt = heading.index + heading[0].length + offset;
+      const insertAt = heading.index + heading[0].length;
       const marker = `\n<!-- social-post-id: ${randomUUID()} -->`;
       output = output.slice(0, insertAt) + marker + output.slice(insertAt);
-      offset += marker.length;
       assigned++;
     }
   }
@@ -152,14 +162,14 @@ export function assignIds(raw: string, document: VaultDocument): { raw: string; 
 
 export function renderSinglePost(input: {
   id: string; title: string; content: string; status: string; platform: string; postType: string;
-  sourceUrl?: string; targetDate?: string; approvedBy?: string; approvedAt?: string;
+  sourceUrl?: string; targetDate?: string; recommendedTime?: string; metadata?: Record<string, string>; approvedBy?: string; approvedAt?: string;
   approvedContentHash?: string; publishedAt?: string; liveUrl?: string;
   mediaPaths?: string[];
 }): string {
   const data = {
     post_id: input.id, status: input.status, platform: input.platform, post_type: input.postType,
     source_url: input.sourceUrl ?? "", created: new Date().toISOString().slice(0, 10),
-    planned_for: input.targetDate ?? "", approved_by: input.approvedBy ?? "",
+    planned_for: input.targetDate ?? "", recommended_time: input.recommendedTime ?? "", manager_metadata: input.metadata ?? {}, approved_by: input.approvedBy ?? "",
     approved_at: input.approvedAt ?? "", approved_content_hash: input.approvedContentHash ?? "",
     published_at: input.publishedAt ?? "", live_url: input.liveUrl ?? "",
   };
@@ -173,17 +183,18 @@ export function patchMarkdownPost(raw: string, input: Parameters<typeof renderSi
     Object.assign(parsed.data, {
       post_id: input.id, status: input.status, platform: input.platform, post_type: input.postType,
       source_url: input.sourceUrl ?? "", planned_for: input.targetDate ?? "",
+      recommended_time: input.recommendedTime ?? "", manager_metadata: input.metadata ?? {},
       approved_by: input.approvedBy ?? "", approved_at: input.approvedAt ?? "",
       approved_content_hash: input.approvedContentHash ?? "", published_at: input.publishedAt ?? "",
       live_url: input.liveUrl ?? "",
     });
-    let body = parsed.content.replace(/^#\s+.*$/m, `# ${input.title}`);
+    let body = parsed.content.replace(/^#\s+.*$/m, () => `# ${input.title}`);
     const copyPattern = /(## Exact post text or reshare note\s*\n+)[\s\S]*?(?=\n## |$)/i;
-    if (copyPattern.test(body)) body = body.replace(copyPattern, `$1${input.content.trim()}\n`);
+    if (copyPattern.test(body)) body = body.replace(copyPattern, (_match, prefix: string) => `${prefix}${input.content.trim()}\n`);
     else body += `\n## Exact post text or reshare note\n\n${input.content.trim()}\n`;
     if (input.mediaPaths) {
       const mediaLines = input.mediaPaths.length ? input.mediaPaths.map((mediaPath) => `- Asset path: ${mediaPath}`).join("\n") : "- Asset path:";
-      if (/- Asset path:[^\n]*(?:\n- Asset path:[^\n]*)*/i.test(body)) body = body.replace(/- Asset path:[^\n]*(?:\n- Asset path:[^\n]*)*/i, mediaLines);
+      if (/- Asset path:[^\n]*(?:\n- Asset path:[^\n]*)*/i.test(body)) body = body.replace(/- Asset path:[^\n]*(?:\n- Asset path:[^\n]*)*/i, () => mediaLines);
     }
     return matter.stringify(body, parsed.data);
   }
@@ -194,26 +205,35 @@ export function patchMarkdownPost(raw: string, input: Parameters<typeof renderSi
   const start = heading.index;
   const end = headings[sectionNumber]?.index ?? raw.length;
   let section = raw.slice(start, end);
-  section = section.replace(/^## Post \d+:.*$/m, (value) => value.replace(/:\s*.*$/, `: ${input.title}`));
+  section = section.replace(/^## Post \d+:.*$/m, (value) => value.replace(/:\s*.*$/, () => `: ${input.title}`));
   if (!markerPattern.test(section)) section = section.replace(/^## Post \d+:.*$/m, (value) => `${value}\n<!-- social-post-id: ${input.id} -->`);
   const metadata = JSON.stringify({
     status: input.status,
+    platform: input.platform,
+    post_type: input.postType,
+    source_url: input.sourceUrl ?? "",
+    target_date: input.targetDate ?? "",
+    recommended_time: input.recommendedTime ?? "",
+    metadata: input.metadata ?? {},
     approved_by: input.approvedBy ?? "",
     approved_at: input.approvedAt ?? "",
     approved_content_hash: input.approvedContentHash ?? "",
     published_at: input.publishedAt ?? "",
     live_url: input.liveUrl ?? "",
   });
-  if (metaPattern.test(section)) section = section.replace(metaPattern, `<!-- social-post-meta: ${metadata} -->`);
+  if (metaPattern.test(section)) section = section.replace(metaPattern, () => `<!-- social-post-meta: ${metadata} -->`);
   else section = section.replace(markerPattern, (value) => `${value}\n<!-- social-post-meta: ${metadata} -->`);
-  section = section.replace(/(\*\*Status:\*\*\s*)[^\n]+/i, `$1${input.status.replaceAll("_", " ")}`);
+  section = section.replace(/(\*\*Status:\*\*\s*)[^\n]+/i, (_match, prefix: string) => `${prefix}${input.status.replaceAll("_", " ")}`);
+  if (/\*\*Type:\*\*\s*[^\n]*/i.test(section)) section = section.replace(/(\*\*Type:\*\*\s*)[^\n]*/i, (_match, prefix: string) => `${prefix}${input.postType}`);
+  if (/\*\*Source post:\*\*\s*[^\n]*/i.test(section)) section = section.replace(/(\*\*Source post:\*\*\s*)[^\n]*/i, (_match, prefix: string) => `${prefix}${input.sourceUrl ?? "None"}`);
+  if (/\*\*Recommended time:\*\*\s*[^\n]*/i.test(section)) section = section.replace(/(\*\*Recommended time:\*\*\s*)[^\n]*/i, (_match, prefix: string) => `${prefix}${input.recommendedTime ?? "None"}`);
   if (input.mediaPaths) {
     const media = input.mediaPaths.length ? input.mediaPaths.join(", ") : "None";
-    if (/\*\*Media:\*\*\s*[^\n]*/i.test(section)) section = section.replace(/(\*\*Media:\*\*\s*)[^\n]*/i, `$1${media}`);
-    else section = section.replace(/(\*\*Type:\*\*[^\n]*\n)/i, `$1**Media:** ${media}\n`);
+    if (/\*\*Media:\*\*\s*[^\n]*/i.test(section)) section = section.replace(/(\*\*Media:\*\*\s*)[^\n]*/i, (_match, prefix: string) => `${prefix}${media}`);
+    else section = section.replace(/(\*\*Type:\*\*[^\n]*\n)/i, (_match, prefix: string) => `${prefix}**Media:** ${media}\n`);
   }
   if (/### Exact copy\s*\n+```(?:text)?\s*\n[\s\S]*?\n```/i.test(section)) {
-    section = section.replace(/(### Exact copy\s*\n+```(?:text)?\s*\n)[\s\S]*?(\n```)/i, `$1${input.content.trim()}$2`);
+    section = section.replace(/(### Exact copy\s*\n+```(?:text)?\s*\n)[\s\S]*?(\n```)/i, (_match, prefix: string, suffix: string) => `${prefix}${input.content.trim()}${suffix}`);
   } else {
     section += `\n### Exact copy\n\n\`\`\`text\n${input.content.trim()}\n\`\`\`\n`;
   }

@@ -9,7 +9,9 @@ import { getContentStore } from "@/lib/content-store/filesystem";
 import { ContentConflictError } from "@/lib/content-store/content-store";
 import { commentSchema, createPostSchema, postInputSchema } from "./schema";
 import { publicContentHash } from "@/lib/content-store/markdown";
-import { scanVault } from "@/features/sync/sync";
+import { commitVaultSync, reconcileVaultProjection } from "@/features/sync/sync";
+import { createSyncPlan } from "@/features/manager/core";
+import { createSupabaseManagerRepository } from "@/features/manager/repository";
 
 function value(form: FormData, key: string) { return String(form.get(key) ?? ""); }
 
@@ -29,15 +31,26 @@ export async function signOutAction() {
 }
 
 export async function syncAction(form: FormData) {
-  await requireUser();
+  const user = await requireUser();
   const commit = value(form, "commit") === "true";
-  let summary;
+  const repository = createSupabaseManagerRepository();
+  let result;
   try {
-    summary = await scanVault(commit);
+    const plan = await createSyncPlan(getContentStore(), repository);
+    if (!commit) result = plan;
+    else {
+      const planToken = value(form, "planToken");
+      const confirmation = value(form, "confirmation");
+      if (confirmation !== "CONFIRM_SYNC" || planToken.length !== 64) throw new Error("Run and review a dry run before committing sync");
+      if (planToken !== plan.planToken) throw new Error("The sync plan changed. Run and review a new dry run");
+      const summary = await commitVaultSync(plan.expectedSourceHashes);
+      await repository.addActivity(null, user.id, "vault_sync_committed", { summary: plan.summary, proposed_changes: plan.proposedChanges });
+      result = { ...plan, committed: summary };
+    }
   } catch (error) {
     redirect(`/import?error=${encodeURIComponent(error instanceof Error ? error.message : String(error))}`);
   }
-  redirect(`/import?result=${encodeURIComponent(JSON.stringify(summary))}&mode=${commit ? "commit" : "dry"}`);
+  redirect(`/import?result=${encodeURIComponent(JSON.stringify(result))}&mode=${commit ? "commit" : "dry"}`);
 }
 
 export async function createPostAction(form: FormData) {
@@ -48,10 +61,12 @@ export async function createPostAction(form: FormData) {
     targetDate: value(form, "targetDate"), liveUrl: value(form, "liveUrl"),
   });
   if (!parsed.success) redirect(`/posts/new?error=${encodeURIComponent(parsed.error.issues[0]?.message ?? "Invalid post")}`);
+  const admin = createAdminClient();
+  const { data: profile } = await admin.from("profiles").select("can_approve").eq("id", user.id).single();
+  if (["approved", "posted"].includes(parsed.data.status) && !profile?.can_approve) redirect("/posts/new?error=Only%20Kevin%20can%20approve%20or%20publish%20a%20post");
   const id = randomUUID();
   const document = await getContentStore().createPost({ id, ...parsed.data });
-  await scanVault(true);
-  const admin = createAdminClient();
+  await reconcileVaultProjection();
   await admin.from("posts").update({ created_by: user.id, updated_by: user.id }).eq("id", id);
   await admin.from("post_activity").insert({ post_id: id, actor_id: user.id, event_type: "post_created", changes: { title: parsed.data.title }, source_revision: document.hash });
   redirect(`/posts/${id}`);
@@ -72,6 +87,7 @@ export async function updatePostAction(form: FormData) {
   if (error || !current) redirect("/posts?error=Post%20not%20found");
   const { data: profile } = await admin.from("profiles").select("can_approve").eq("id", user.id).single();
   const requestedStatus = parsed.data.status;
+  if ((requestedStatus === "posted" || current.status === "posted") && !profile?.can_approve) redirect(`/posts/${parsed.data.id}?error=Only%20Kevin%20can%20publish%20or%20change%20a%20posted%20post`);
   const nextHash = publicContentHash({
     content: parsed.data.content, platform: parsed.data.platform, postType: parsed.data.postType,
     sourceUrl: parsed.data.sourceUrl || undefined, mediaPaths: (current.post_media ?? []).map((item: { relative_path: string }) => item.relative_path),
@@ -101,7 +117,7 @@ export async function updatePostAction(form: FormData) {
       ...parsed.data, status, sourcePath: current.source_path, locator: current.source_locator,
       approvedBy, approvedAt, approvedContentHash: approvedHash, publishedAt,
     });
-    await scanVault(true);
+    await reconcileVaultProjection();
     await admin.from("posts").update({ updated_by: user.id }).eq("id", parsed.data.id);
     await admin.from("post_activity").insert({
       post_id: parsed.data.id, actor_id: user.id, event_type: status !== current.status ? "status_changed" : "post_edited",
@@ -138,8 +154,11 @@ export async function uploadMediaAction(form: FormData) {
   const admin = createAdminClient();
   const { data: current, error } = await admin.from("posts").select("*, post_media(relative_path)").eq("id", postId).single();
   if (error || !current) redirect("/posts?error=Post%20not%20found");
+  const { data: profile } = await admin.from("profiles").select("can_approve").eq("id", user.id).single();
+  if (current.status === "posted" && !profile?.can_approve) redirect(`/posts/${postId}?error=Only%20Kevin%20can%20change%20a%20posted%20post`);
   const store = getContentStore();
-  let media: Awaited<ReturnType<typeof store.writeMedia>>;
+  let media: Awaited<ReturnType<typeof store.writeMedia>> | undefined;
+  let canonicalUpdated = false;
   try {
     media = await store.writeMedia(postId, file.name, Buffer.from(await file.arrayBuffer()));
     const mediaPaths = [...(current.post_media ?? []).map((item: { relative_path: string }) => item.relative_path), media.relativePath];
@@ -149,11 +168,16 @@ export async function uploadMediaAction(form: FormData) {
       postType: current.post_type, sourceUrl: current.source_url ?? undefined, targetDate: current.target_date ?? undefined,
       liveUrl: current.live_url ?? undefined, mediaPaths,
     });
-    await scanVault(true);
-    await admin.from("post_media").insert({ post_id: postId, relative_path: media.relativePath, file_name: media.fileName, mime_type: media.mimeType, size_bytes: media.sizeBytes, content_hash: media.contentHash, sort_order: mediaPaths.length - 1 });
+    canonicalUpdated = true;
+    const { error: mediaProjectionError } = await admin.from("post_media").upsert({ post_id: postId, relative_path: media.relativePath, file_name: media.fileName, mime_type: media.mimeType, size_bytes: media.sizeBytes, content_hash: media.contentHash, sort_order: mediaPaths.length - 1 }, { onConflict: "relative_path" });
+    if (mediaProjectionError) throw mediaProjectionError;
+    await reconcileVaultProjection();
     await admin.from("posts").update({ updated_by: user.id }).eq("id", postId);
     await admin.from("post_activity").insert({ post_id: postId, actor_id: user.id, event_type: "media_added", changes: { file_name: media.fileName, approval_invalidated: Boolean(current.approved_at) } });
   } catch (mediaError) {
+    if (media && !canonicalUpdated) {
+      try { await store.removeMedia(media.relativePath); } catch { /* Preserve the original write error. */ }
+    }
     redirect(`/posts/${postId}?error=${encodeURIComponent(mediaError instanceof Error ? mediaError.message : String(mediaError))}`);
   }
   revalidatePath(`/posts/${postId}`);
@@ -168,6 +192,8 @@ export async function removeMediaAction(form: FormData) {
   const { data: current } = await admin.from("posts").select("*, post_media(*)").eq("id", postId).single();
   const target = current?.post_media?.find((item: { id: string }) => item.id === mediaId);
   if (!current || !target) redirect(`/posts/${postId}?error=Media%20not%20found`);
+  const { data: profile } = await admin.from("profiles").select("can_approve").eq("id", user.id).single();
+  if (current.status === "posted" && !profile?.can_approve) redirect(`/posts/${postId}?error=Only%20Kevin%20can%20change%20a%20posted%20post`);
   const mediaPaths = current.post_media.filter((item: { id: string }) => item.id !== mediaId).map((item: { relative_path: string }) => item.relative_path);
   try {
     await getContentStore().patchPost({
@@ -176,9 +202,10 @@ export async function removeMediaAction(form: FormData) {
       postType: current.post_type, sourceUrl: current.source_url ?? undefined, targetDate: current.target_date ?? undefined,
       liveUrl: current.live_url ?? undefined, mediaPaths,
     });
+    const { error: mediaProjectionError } = await admin.from("post_media").delete().eq("id", mediaId);
+    if (mediaProjectionError) throw mediaProjectionError;
+    await reconcileVaultProjection();
     await getContentStore().removeMedia(target.relative_path);
-    await admin.from("post_media").delete().eq("id", mediaId);
-    await scanVault(true);
     await admin.from("posts").update({ updated_by: user.id }).eq("id", postId);
     await admin.from("post_activity").insert({ post_id: postId, actor_id: user.id, event_type: "media_removed", changes: { file_name: target.file_name, approval_invalidated: Boolean(current.approved_at) } });
   } catch (mediaError) {

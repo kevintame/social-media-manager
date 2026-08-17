@@ -18,7 +18,10 @@ export async function proxy(request: NextRequest) {
     },
   );
   const { data: { user } } = await supabase.auth.getUser();
-  const isPublic = request.nextUrl.pathname.startsWith("/login") || request.nextUrl.pathname.startsWith("/auth/");
+  // The manager route performs its own bearer authentication and localhost
+  // enforcement. It must not be redirected to cookie login middleware.
+  const isManagerApi = request.nextUrl.pathname === "/api/manager";
+  const isPublic = isManagerApi || request.nextUrl.pathname.startsWith("/login") || request.nextUrl.pathname.startsWith("/auth/");
   if (!user && !isPublic) {
     const url = request.nextUrl.clone();
     url.pathname = "/login";
